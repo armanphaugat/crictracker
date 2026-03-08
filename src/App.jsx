@@ -647,6 +647,7 @@ function GameScreen({ match, onEnd, onBack }) {
   const [activeTab, setTab]     = useState("live");
   // Fix #5: pending innings-2 transition stored in state so it uses fresh G
   const [pendingInn2, setPendingInn2] = useState(null);
+  const [pendingFinalG, setPendingFinalG] = useState(null);
 
   const showToast = msg => { setToast(msg); vib(40); };
 
@@ -666,16 +667,20 @@ function GameScreen({ match, onEnd, onBack }) {
   const crr        = G.legalBalls>0?((G.score/G.legalBalls)*6).toFixed(2):"0.00";
   const rrr        = G.target!==null&&G.inn===2&&TOTAL-G.legalBalls>0?(((G.target+1-G.score)/((TOTAL-G.legalBalls)/6))).toFixed(2):null;
 
-  const triggerEnd = (winner, margin) => {
+  const triggerEnd = (winner, margin, finalG) => {
     const res={winner,margin};
     setResult(res);
+    setPendingFinalG(finalG);
     setModal("result");
+  };
+
+  const saveMatchData = (finalG, winner, margin) => {
     loadData(STORE_KEY).then(sessions=>{
       const arr=sessions||[];
       arr.push({id:Date.now().toString(),batName:battingTeam.name,bowlName:bowlingTeam.name,overs:maxOvers,date:new Date().toISOString(),winner,margin});
       saveData(STORE_KEY,arr);
     });
-    updatePlayerStats(G,winner,battingTeam,bowlingTeam);
+    updatePlayerStats(finalG,winner,battingTeam,bowlingTeam);
   };
 
   const updatePlayerStats = async (finalG,winner,bt,bwt) => {
@@ -782,10 +787,11 @@ function GameScreen({ match, onEnd, onBack }) {
 
       if(G2.inn===1&&(allOut||over)){ const snap=JSON.parse(JSON.stringify(G2)); setTimeout(()=>setPendingInn2({score:G2.score,snap}),100); return G2; }
       if(G2.inn===2){
-        if(chased){const wl=G2.batters.filter(b=>!b.out).length;setTimeout(()=>triggerEnd(inningsBatTeam,`${wl} wicket${wl!==1?"s":""}`),100);return G2;}
+        if(chased){const wl=G2.batters.filter(b=>!b.out).length;const snap=JSON.parse(JSON.stringify(G2));setTimeout(()=>triggerEnd(inningsBatTeam,`${wl} wicket${wl!==1?"s":""}`,snap),100);return G2;}
         if(allOut||over){
-          if(G2.score<G2.target)setTimeout(()=>triggerEnd(battingTeam.name,`${G2.target-G2.score} run${G2.target-G2.score!==1?"s":""}`),100);
-          else setTimeout(()=>triggerEnd("Match TIED",""),100);
+          const snap=JSON.parse(JSON.stringify(G2));
+          if(G2.score<G2.target)setTimeout(()=>triggerEnd(battingTeam.name,`${G2.target-G2.score} run${G2.target-G2.score!==1?"s":""}`,snap),100);
+          else setTimeout(()=>triggerEnd("Match TIED","",snap),100);
           return G2;
         }
       }
@@ -859,7 +865,7 @@ function GameScreen({ match, onEnd, onBack }) {
         position:"sticky",top:0,zIndex:40,
         boxShadow:`0 2px 16px ${T.shadow}`
       }}>
-        <button style={{background:"rgba(255,255,255,0.12)",border:"1px solid rgba(255,255,255,0.2)",color:"#fff",borderRadius:10,padding:"6px 12px",fontWeight:900,cursor:"pointer",fontSize:15}} onClick={onBack}>‹</button>
+        <button style={{background:"rgba(255,255,255,0.12)",border:"1px solid rgba(255,255,255,0.2)",color:"#fff",borderRadius:10,padding:"6px 12px",fontWeight:900,cursor:"pointer",fontSize:15}} onClick={()=>setModal("exitConfirm")}>‹</button>
         <div style={{flex:1,textAlign:"center"}}>
           <div style={{color:"#fff",fontWeight:900,fontSize:14,fontFamily:"'Barlow Condensed', sans-serif",letterSpacing:0.5}}>{inningsBatTeam} <span style={{color:"rgba(255,255,255,0.4)",fontWeight:400,fontSize:12}}>vs</span> {inningsBowlTeam}</div>
           <div style={{color:"rgba(255,255,255,0.5)",fontSize:10}}>
@@ -1037,7 +1043,26 @@ function GameScreen({ match, onEnd, onBack }) {
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
             <thead><tr>{["Batsman","R","B","4","6","SR"].map(h=><th key={h} style={{padding:"7px 5px",textAlign:h==="Batsman"?"left":"center",color:T.textSoft,fontWeight:800,borderBottom:`1px solid ${T.border}`,fontSize:10,letterSpacing:1,textTransform:"uppercase"}}>{h}</th>)}</tr></thead>
             <tbody>
-              {G.batters.filter(b=>b.balls>0||b.out).map((b,i)=>(
+              {G.batters.map((b,i)=>{
+                // Only show batters who have batted or are currently at crease; hide out batters who are neither striker nor non-striker
+                const atCrease = i===G.strikerIdx||i===G.nonStrikerIdx;
+                if(!atCrease && b.balls===0 && !b.out) return null; // yet to bat, not at crease
+                if(b.out && !atCrease) return ( // out and off field — show in scorecard style
+                  <tr key={i} style={{borderBottom:`1px solid ${T.border}`,background:T.white}}>
+                    <td style={{padding:"9px 5px",color:T.textSoft,fontWeight:700}}>
+                      <span style={{marginRight:4}}>{b.emoji||"😎"}</span>
+                      <span style={{color:T.red}}>✕ </span>
+                      {b.name}{b.isCaptain&&<span style={{color:"#F59E0B",fontSize:9}}> ©</span>}
+                      {b.isDuck&&<span style={{marginLeft:4,fontSize:9}}>{b.isGoldenDuck?"🥇🦆":"🦆"}</span>}
+                    </td>
+                    <td style={{textAlign:"center",fontWeight:900,color:T.textSoft,fontFamily:"'Barlow Condensed', sans-serif",fontSize:14}}>{b.runs}</td>
+                    <td style={{textAlign:"center",color:T.textSoft,fontSize:11}}>{b.balls}</td>
+                    <td style={{textAlign:"center",color:T.textSoft,fontWeight:800}}>{b.fours}</td>
+                    <td style={{textAlign:"center",color:T.textSoft,fontWeight:800}}>{b.sixes}</td>
+                    <td style={{textAlign:"center",color:T.textSoft,fontSize:10}}>{SR(b.runs,b.balls)}</td>
+                  </tr>
+                );
+                return (
                 <tr key={i} style={{borderBottom:`1px solid ${T.border}`,background:i===G.strikerIdx?T.blueLight:T.white}}>
                   <td style={{padding:"9px 5px",color:b.out?T.textSoft:T.text,fontWeight:700}}>
                     <span style={{marginRight:4}}>{b.emoji||"😎"}</span>
@@ -1053,7 +1078,8 @@ function GameScreen({ match, onEnd, onBack }) {
                   <td style={{textAlign:"center",color:"#16a34a",fontWeight:800}}>{b.sixes}</td>
                   <td style={{textAlign:"center",color:T.textSoft,fontSize:10}}>{SR(b.runs,b.balls)}</td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -1128,7 +1154,26 @@ function GameScreen({ match, onEnd, onBack }) {
       {modal==="partner"&&<PartnerModal data={G.partnerships} batters={G.batters} onClose={()=>setModal(null)}/>}
       {modal==="mom"&&<MOMModal G={G} battingTeam={battingTeam} bowlingTeam={bowlingTeam} onClose={()=>setModal(null)}/>}
       {modal==="overlog"&&<OverLogModal log={G.completedOvers} current={G.currentOverBalls} onClose={()=>setModal(null)}/>}
-      {modal==="result"&&matchResult&&<ResultModal result={matchResult} G={G} battingTeam={battingTeam} bowlingTeam={bowlingTeam} onHome={onEnd} onScorecard={()=>setModal("scorecard")}/>}
+      {modal==="result"&&matchResult&&<ResultModal result={matchResult} G={G} battingTeam={battingTeam} bowlingTeam={bowlingTeam}
+        onHome={shouldSave=>{
+          if(shouldSave&&pendingFinalG) saveMatchData(pendingFinalG,matchResult.winner,matchResult.margin);
+          onEnd();
+        }}
+        onScorecard={()=>setModal("scorecard")}/>}
+
+      {modal==="exitConfirm"&&(
+        <div style={S.overlay}>
+          <div style={{...S.sheet,padding:"28px 20px"}}>
+            <div style={S.sheetHead}>
+              <div style={S.sheetTitle}>⚠️ Leave Match?</div>
+              <button style={S.closeBtn} onClick={()=>setModal(null)}>✕</button>
+            </div>
+            <p style={{color:T.textMid,fontSize:14,margin:"14px 0 20px",lineHeight:1.6}}>The match is in progress. Going back will lose all current progress.</p>
+            <button style={{...S.dangerBtn,marginBottom:10}} onClick={()=>{setModal(null);onBack();}}>⬅ Yes, Go Back</button>
+            <button style={S.ghostBtn} onClick={()=>setModal(null)}>Continue Match</button>
+          </div>
+        </div>
+      )}
 
       {toast&&<Toast msg={toast} onDone={()=>setToast(null)}/>}
     </div>
@@ -1552,17 +1597,24 @@ function PlayerDashboard({ onBack }) {
 /* ═══════════════════════════════════════════════
    SERIES SCREEN
 ═══════════════════════════════════════════════ */
-function SeriesScreen({ sessions, onBack }) {
-  const [tab, setTab] = useState("h2h");
+function SeriesScreen({ onBack, onRematch }) {
+  const [tab, setTab]       = useState("h2h");
+  const [sessions, setSessions] = useState([]);
+  const [loading, setLoading]   = useState(true);
+
+  useEffect(()=>{ loadData(STORE_KEY).then(d=>{ setSessions(d||[]); setLoading(false); }); },[]);
+
   const h2h={};
-  (sessions||[]).forEach(s=>{
+  sessions.forEach(s=>{
     const key=[s.batName,s.bowlName].sort().join("__VS__");
     if(!h2h[key]) h2h[key]={t1:[s.batName,s.bowlName].sort()[0],t2:[s.batName,s.bowlName].sort()[1],wins:{},matches:0};
     h2h[key].matches++;
     if(s.winner&&s.winner!=="Match TIED") h2h[key].wins[s.winner]=(h2h[key].wins[s.winner]||0)+1;
   });
   const h2hList=Object.values(h2h).sort((a,b)=>b.matches-a.matches);
-  const recent=[...(sessions||[])].reverse().slice(0,20);
+  const recent=[...sessions].reverse().slice(0,20);
+
+  if(loading) return <div style={{minHeight:"100vh",background:T.offWhite,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{color:T.textSoft,fontSize:16}}>Loading…</div></div>;
 
   return (
     <div style={{minHeight:"100vh",background:T.offWhite,paddingBottom:60}}>
@@ -1611,7 +1663,7 @@ function SeriesScreen({ sessions, onBack }) {
           </div>
         ):recent.map((s,i)=>(
           <div key={i} style={{...S.card,marginBottom:10}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:s.batName?10:0}}>
               <div>
                 <div style={{color:T.text,fontWeight:800,fontSize:13,fontFamily:"'Barlow Condensed', sans-serif"}}>{s.batName} <span style={{color:T.textSoft,fontWeight:400}}>vs</span> {s.bowlName}</div>
                 <div style={{color:T.textSoft,fontSize:11,marginTop:2}}>{new Date(s.date).toLocaleDateString("en-IN",{day:"numeric",month:"short",year:"2-digit"})} · {s.overs} ov</div>
@@ -1621,6 +1673,11 @@ function SeriesScreen({ sessions, onBack }) {
                 {s.margin&&<div style={{color:T.textSoft,fontSize:10}}>by {s.margin}</div>}
               </div>
             </div>
+            <button onClick={()=>onRematch(s)} style={{
+              width:"100%",padding:"9px",background:T.blueLight,border:`1.5px solid ${T.blue}`,
+              borderRadius:10,color:T.blue,fontWeight:900,fontSize:12,cursor:"pointer",
+              fontFamily:"'Barlow Condensed', sans-serif",letterSpacing:0.5
+            }}>🔁 Rematch — Go to Toss</button>
           </div>
         )))}
       </div>
@@ -1685,6 +1742,7 @@ function RulesModal({ onClose }) {
 ═══════════════════════════════════════════════ */
 function ResultModal({ result, G, battingTeam, bowlingTeam, onHome, onScorecard }) {
   const isTie = result.winner==="Match TIED";
+  const [askedSave, setAskedSave] = useState(false);
   const handleWA = () => {
     const msg = buildWAMessage(G, battingTeam, bowlingTeam, result);
     window.open(`https://wa.me/?text=${msg}`, "_blank");
@@ -1699,17 +1757,28 @@ function ResultModal({ result, G, battingTeam, bowlingTeam, onHome, onScorecard 
           <>
             <div style={{color:T.blue,fontWeight:900,fontSize:28,fontFamily:"'Barlow Condensed', sans-serif",letterSpacing:1,marginBottom:4}}>{result.winner}</div>
             <div style={{color:T.red,fontWeight:900,fontSize:22,fontFamily:"'Barlow Condensed', sans-serif",letterSpacing:2,marginBottom:4}}>WON! 🎉</div>
-            <div style={{color:T.textSoft,fontSize:14,marginBottom:24}}>by {result.margin}</div>
+            <div style={{color:T.textSoft,fontSize:14,marginBottom:16}}>by {result.margin}</div>
           </>
         )}
         <button style={{...S.primaryBtn,marginBottom:10}} onClick={onScorecard}>📊 Full Scorecard</button>
-        {/* Feature 24 in result modal */}
         <button onClick={handleWA} style={{
           width:"100%",display:"block",padding:"13px",border:"2px solid #25D366",borderRadius:14,
           background:"#F0FFF4",color:"#16a34a",fontWeight:900,fontSize:14,
           cursor:"pointer",fontFamily:"'Barlow Condensed', sans-serif",letterSpacing:0.5,marginBottom:10
         }}>📲 Share on WhatsApp</button>
-        <button style={S.ghostBtn} onClick={onHome}>🏠 Back to Home</button>
+
+        {/* Save stats prompt */}
+        {!askedSave ? (
+          <div style={{background:T.blueLight,border:`1px solid ${T.border}`,borderRadius:14,padding:"14px",marginBottom:10}}>
+            <div style={{color:T.text,fontWeight:800,fontSize:13,marginBottom:10}}>💾 Save match to history & player stats?</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+              <button onClick={()=>{setAskedSave(true);onHome(true);}} style={{padding:"11px",background:`linear-gradient(135deg,${T.blue},${T.blueDark})`,color:"#fff",border:"none",borderRadius:12,fontWeight:900,fontSize:13,cursor:"pointer",fontFamily:"'Barlow Condensed', sans-serif"}}>✅ Save</button>
+              <button onClick={()=>{setAskedSave(true);onHome(false);}} style={{padding:"11px",background:T.offWhite,color:T.textMid,border:`1.5px solid ${T.border}`,borderRadius:12,fontWeight:900,fontSize:13,cursor:"pointer",fontFamily:"'Barlow Condensed', sans-serif"}}>🚫 Skip</button>
+            </div>
+          </div>
+        ) : (
+          <button style={S.ghostBtn} onClick={()=>onHome(true)}>🏠 Back to Home</button>
+        )}
       </div>
       <style>{`@keyframes bounceIn{from{transform:scale(.3);opacity:0}to{transform:scale(1);opacity:1}}`}</style>
     </div>
@@ -1734,6 +1803,14 @@ export default function App() {
   const back = () => { setHist(h=>{ const n=[...h]; const prev=n.pop(); setPhase(prev||"home"); return n; }); };
   const resetMatch = () => { setPhase("home"); setHist([]); setTeamA(null); setTeamB(null); setMatch(null); loadData(STORE_KEY).then(d=>setSessions(d||[])); };
 
+  // Rematch: reuse same overs, go straight to TeamA setup with name pre-filled
+  const handleRematch = (session) => {
+    setOvers(session.overs||6);
+    setTeamA(null); setTeamB(null); setMatch(null);
+    setHist(["home","series"]);
+    setPhase("teamA");
+  };
+
   return (
     <div style={{maxWidth:480,margin:"0 auto",minHeight:"100vh",background:T.offWhite,fontFamily:"'Barlow Condensed','Segoe UI',sans-serif"}}>
       <style>{GLOBAL_CSS}</style>
@@ -1743,7 +1820,7 @@ export default function App() {
       {phase==="toss"    && teamA&&teamB && <CoinToss teamA={teamA} teamB={teamB} onResult={(bat,bowl)=>{setMatch({battingTeam:bat,bowlingTeam:bowl,overs});go("game");}} onBack={back}/>}
       {phase==="game"    && match && <GameScreen match={match} onEnd={resetMatch} onBack={back}/>}
       {phase==="players" && <PlayerDashboard onBack={back}/>}
-      {phase==="series"  && <SeriesScreen sessions={sessions} onBack={back}/>}
+      {phase==="series"  && <SeriesScreen onBack={back} onRematch={handleRematch}/>}
     </div>
   );
 }
