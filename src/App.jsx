@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect } from "react";
 import {
   ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, ReferenceLine, RadarChart,
@@ -62,7 +62,7 @@ const mkBatter = (name, isCaptain=false, isWK=false, emoji="😎") =>
 const mkBowler = (name, isCaptain=false) =>
   ({ name, isCaptain, overs:0, balls:0, runs:0, wkts:0, wides:0, noBalls:0, dots:0 });
 
-const fmtOvers  = b => `${Math.floor(b/6)}.${b%6}`;
+const fmtOvers  = b => { const ov=Math.floor(b/6),bl=b%6; return bl===0&&ov>0?`${ov}.0`:`${ov}.${bl}`; };
 const SR        = (r,b) => b>0 ? ((r/b)*100).toFixed(1) : "—";
 const ECO       = (r,b) => b>0 ? ((r/b)*6).toFixed(2)  : "—";
 const vib       = p => { try { navigator.vibrate?.(p); } catch {} };
@@ -185,7 +185,7 @@ const generateScorecardImage = (G, battingTeam, bowlingTeam) => {
   ctx.fillText(`${battingTeam.name} vs ${bowlingTeam.name}`, midX, 196);
   ctx.textAlign = "left";
 
-  const drawSection = (title, color, rows, startY) => {
+  const drawSection = (title, color, rows, startY, extras, innScore) => {
     // Section header
     ctx.fillStyle = color;
     ctx.fillRect(30, startY, W-60, 34);
@@ -216,13 +216,13 @@ const generateScorecardImage = (G, battingTeam, bowlingTeam) => {
     });
     // Extras
     ctx.fillStyle="#4A5580"; ctx.font="italic 12px Arial";
-    ctx.fillText(`Extras: Wd ${inn1Extras.wides} · NB ${inn1Extras.noBalls}  |  Total: ${startY<400?inn1Score:inn2Score}`, 46, y+6);
+    ctx.fillText(`Extras: Wd ${extras.wides} · NB ${extras.noBalls}  |  Total: ${innScore}`, 46, y+6);
     return y+28;
   };
 
   let y = 220;
-  y = drawSection(`🏏 ${battingTeam.name} — Innings 1`, "#1741C6", inn1Batters, y);
-  if(inn2Batters.length>0) drawSection(`🏏 ${bowlingTeam.name} — Innings 2`, "#D42B2B", inn2Batters, y+10);
+  y = drawSection(`🏏 ${battingTeam.name} — Innings 1`, "#1741C6", inn1Batters, y, inn1Extras, inn1Score);
+  if(inn2Batters.length>0) drawSection(`🏏 ${bowlingTeam.name} — Innings 2`, "#D42B2B", inn2Batters, y+10, inn2Extras, inn2Score);
 
   // Footer
   ctx.fillStyle = "#1741C6";
@@ -261,7 +261,7 @@ const buildWAMessage = (G, battingTeam, bowlingTeam, matchResult) => {
     topBowl && topBowl.wkts>0 ? `🎯 Top Bowler: *${topBowl.name}* — ${topBowl.wkts}w/${fmtOvers(topBowl.balls)}ov` : "",
     ``,
     `_Tracked with Gully Cricket App_ 🌟`,
-  ].filter(l=>l!==null).join("\n");
+  ].filter(Boolean).join("\n");
 
   return encodeURIComponent(lines);
 };
@@ -289,7 +289,7 @@ function Toast({ msg, onDone }) {
 function RadioModal({ title, subtitle, options, onSelect, onClose, confirmLabel="Confirm" }) {
   const [sel, setSel] = useState(null);
   const avail = options.filter(o=>!o.disabled);
-  useEffect(()=>{ if(avail.length===1) setSel(avail[0].value); },[]);
+  useEffect(()=>{ if(avail.length===1) setSel(avail[0].value); },[options]);
   return (
     <div style={S.overlay}>
       <div style={S.sheet}>
@@ -645,8 +645,18 @@ function GameScreen({ match, onEnd, onBack }) {
   const [toast, setToast]       = useState(null);
   const [matchResult, setResult]= useState(null);
   const [activeTab, setTab]     = useState("live");
+  // Fix #5: pending innings-2 transition stored in state so it uses fresh G
+  const [pendingInn2, setPendingInn2] = useState(null);
 
   const showToast = msg => { setToast(msg); vib(40); };
+
+  // Fix #5: handle innings 2 transition outside of setG updater to avoid stale closure
+  useEffect(()=>{
+    if(!pendingInn2) return;
+    startInnings2(pendingInn2.score, pendingInn2.snap);
+    setPendingInn2(null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[pendingInn2]);
 
   const inningsBatTeam  = G.inn===1?battingTeam.name:bowlingTeam.name;
   const inningsBowlTeam = G.inn===1?bowlingTeam.name:battingTeam.name;
@@ -685,7 +695,8 @@ function GameScreen({ match, onEnd, onBack }) {
         // Duck tracking — feature 10
         if(bat.out&&bat.runs===0){
           p.ducks++;
-          if(bat.balls===0) p.goldenDucks++;
+          // Golden duck: dismissed on first ball (balls===1 after increment, meaning 0 faced before)
+          if(bat.balls===1) p.goldenDucks++;
         }
       }
       if(bowl&&bowl.balls>0){
@@ -734,7 +745,7 @@ function GameScreen({ match, onEnd, onBack }) {
         G2.legalBalls+=1;s2.balls+=1;b2.balls+=1;G2.freeHit=false;
         if(type==="out"){
           G2.wickets+=1;s2.out=true;b2.wkts+=1;
-          // Duck / golden duck detection — feature 10
+          // Fix #1: check balls BEFORE increment — golden duck = dismissed on first ball (was 0)
           if(s2.runs===0){ s2.isDuck=true; if(s2.balls===1) s2.isGoldenDuck=true; }
           G2.currentOverBalls.push("W");
           const pp=G2.partnerships; if(pp.length>0) pp[pp.length-1].balls+=1;
@@ -751,7 +762,7 @@ function GameScreen({ match, onEnd, onBack }) {
       }
 
       G2.totalDeliveries+=1;
-      G2.deliveryLog.push({n:G2.totalDeliveries,type,scoreAfter:G2.score,isLegal:legal});
+      G2.deliveryLog.push({n:G2.totalDeliveries,type,scoreAfter:G2.score,isLegal:legal,freeHitBefore:prev.freeHit});
       G2.commentary.unshift(genComm(type,s2?.name,b2?.name));
 
       // Milestones
@@ -762,13 +773,14 @@ function GameScreen({ match, onEnd, onBack }) {
       if(type==="out"&&s2.runs===0) setTimeout(()=>showToast(`🦆 ${s2.name} — ${s2.balls===1?"GOLDEN ":""}Duck!`),80);
 
       const overDone=legal&&G2.legalBalls%6===0&&G2.legalBalls>0;
-      if(overDone&&type!=="out"){ G2.completedOvers.push([...G2.currentOverBalls]);G2.currentOverBalls=[];b2.overs+=1;const t=G2.strikerIdx;G2.strikerIdx=G2.nonStrikerIdx;G2.nonStrikerIdx=t; }
+      // Fix #8: archive the over even when the last ball is a wicket
+      if(overDone){ G2.completedOvers.push([...G2.currentOverBalls]);G2.currentOverBalls=[];b2.overs+=1; if(type!=="out"){const t=G2.strikerIdx;G2.strikerIdx=G2.nonStrikerIdx;G2.nonStrikerIdx=t;} }
 
       const allOut=G2.wickets>=(G2.batters.filter(b=>!b.retired).length);
       const over=G2.legalBalls>=TOTAL;
       const chased=G2.target!==null&&G2.score>G2.target;
 
-      if(G2.inn===1&&(allOut||over)){ const snap=JSON.parse(JSON.stringify(G2)); setTimeout(()=>startInnings2(G2.score,snap),100); return G2; }
+      if(G2.inn===1&&(allOut||over)){ const snap=JSON.parse(JSON.stringify(G2)); setTimeout(()=>setPendingInn2({score:G2.score,snap}),100); return G2; }
       if(G2.inn===2){
         if(chased){const wl=G2.batters.filter(b=>!b.out).length;setTimeout(()=>triggerEnd(inningsBatTeam,`${wl} wicket${wl!==1?"s":""}`),100);return G2;}
         if(allOut||over){
@@ -778,8 +790,18 @@ function GameScreen({ match, onEnd, onBack }) {
         }
       }
 
-      if(type==="out"){ const nx=G2.batters.findIndex((b,i)=>!b.out&&i!==G2.nonStrikerIdx&&i!==G2.strikerIdx); if(nx>=0) setTimeout(()=>setModal("selectBatter"),200); }
-      if(overDone&&type!=="out") setTimeout(()=>setModal("selectBowler"),200);
+      if(type==="out"){
+        // Fix: last remaining batter auto-advances without modal prompt
+        const available=G2.batters.filter((b,i)=>!b.out&&!b.retired&&i!==G2.nonStrikerIdx&&i!==G2.strikerIdx);
+        if(available.length===1){
+          const autoIdx=G2.batters.findIndex((b,i)=>!b.out&&!b.retired&&i!==G2.nonStrikerIdx&&i!==G2.strikerIdx);
+          G2.strikerIdx=autoIdx;
+          G2.partnerships.push({bat1:autoIdx,bat2:G2.nonStrikerIdx,runs:0,balls:0});
+        } else if(available.length>1){
+          setTimeout(()=>setModal("selectBatter"),200);
+        }
+      }
+      if(overDone) setTimeout(()=>setModal("selectBowler"),200);
       return G2;
     });
   };
@@ -792,13 +814,15 @@ function GameScreen({ match, onEnd, onBack }) {
       const s2=G2.batters[G2.strikerIdx];
       const b2=G2.bowlers[G2.bowlerIdx];
       if(last.type==="wide"){G2.score-=1;G2.extras.wides-=1;b2.runs-=1;b2.wides-=1;G2.currentOverBalls.pop();}
-      else if(last.type==="nb"){G2.score-=1;G2.extras.noBalls-=1;b2.runs-=1;b2.noBalls-=1;G2.currentOverBalls.pop();G2.freeHit=false;}
+      else if(last.type==="nb"){G2.score-=1;G2.extras.noBalls-=1;b2.runs-=1;b2.noBalls-=1;G2.currentOverBalls.pop();}
       else if(last.type!=="dead"){
         G2.legalBalls-=1;s2.balls-=1;b2.balls-=1;
-        if(last.type==="out"){G2.wickets-=1;s2.out=false;b2.wkts-=1;}
-        else{const r=last.type;G2.score-=r;s2.runs-=r;b2.runs-=r;if(r===0)s2.dots-=1;if(r===4)s2.fours-=1;if(r===6)s2.sixes-=1;if(r%2===1){const t=G2.strikerIdx;G2.strikerIdx=G2.nonStrikerIdx;G2.nonStrikerIdx=t;}}
+        if(last.type==="out"){G2.wickets-=1;s2.out=false;b2.wkts-=1;s2.isDuck=false;s2.isGoldenDuck=false;}
+        else{const r=last.type;G2.score-=r;s2.runs-=r;b2.runs-=r;if(r===0){s2.dots-=1;b2.dots=(b2.dots||1)-1;}if(r===4)s2.fours-=1;if(r===6)s2.sixes-=1;if(r%2===1){const t=G2.strikerIdx;G2.strikerIdx=G2.nonStrikerIdx;G2.nonStrikerIdx=t;}}
         if(G2.currentOverBalls.length>0)G2.currentOverBalls.pop();
       }
+      // Fix #4: restore freeHit state from before this delivery
+      if(last.freeHitBefore!==undefined) G2.freeHit=last.freeHitBefore;
       return G2;
     });
     showToast("↩ Undone");
@@ -1388,6 +1412,9 @@ function PlayerDashboard({ onBack }) {
 
   useEffect(()=>{ loadData(PLAYERS_KEY).then(d=>{ setPlayers(d||{}); setLoad(false); }); },[]);
 
+  // Fix #9: stable emoji based on name hash, not leaderboard position
+  const playerEmoji = name => EMOJIS[name.split("").reduce((acc,c)=>acc+c.charCodeAt(0),0)%EMOJIS.length];
+
   const list = Object.values(players).sort((a,b)=>b.runs-a.runs);
 
   if(loading) return <div style={{minHeight:"100vh",background:T.offWhite,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{color:T.textSoft,fontSize:16}}>Loading…</div></div>;
@@ -1418,7 +1445,7 @@ function PlayerDashboard({ onBack }) {
         <div style={{padding:"16px 16px 48px"}}>
           {/* Hero */}
           <div style={{background:`linear-gradient(150deg,${T.blue},${T.blueDark})`,borderRadius:20,padding:"24px 20px",textAlign:"center",marginBottom:16,borderBottom:`4px solid ${T.red}`}}>
-            <div style={{fontSize:52,marginBottom:6}}>{EMOJIS[list.findIndex(pl=>pl.name===p.name)%EMOJIS.length]||"🏏"}</div>
+            <div style={{fontSize:52,marginBottom:6}}>{playerEmoji(p.name)}</div>
             <div style={{color:"#fff",fontWeight:900,fontSize:26,fontFamily:"'Barlow Condensed', sans-serif",letterSpacing:1}}>{p.name}</div>
             <div style={{color:"rgba(255,255,255,0.55)",fontSize:12,marginBottom:16}}>{p.team||"—"} · {p.matches} matches</div>
             <div style={{display:"flex",justifyContent:"space-around"}}>
@@ -1505,7 +1532,7 @@ function PlayerDashboard({ onBack }) {
             borderRadius:16,padding:"14px",marginBottom:8,cursor:"pointer",textAlign:"left",
             boxShadow:`0 1px 4px ${T.shadow}`
           }}>
-            <div style={{width:46,height:46,borderRadius:14,background:`linear-gradient(135deg,${T.blue},${T.blueDark})`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,flexShrink:0}}>{EMOJIS[i%EMOJIS.length]}</div>
+            <div style={{width:46,height:46,borderRadius:14,background:`linear-gradient(135deg,${T.blue},${T.blueDark})`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,flexShrink:0}}>{playerEmoji(p.name)}</div>
             <div style={{flex:1}}>
               <div style={{color:T.text,fontWeight:800,fontSize:15,fontFamily:"'Barlow Condensed', sans-serif",letterSpacing:0.3}}>{p.name}</div>
               <div style={{color:T.textSoft,fontSize:11,marginTop:2}}>{p.matches} matches · {p.wins} wins{(p.ducks||0)>0?` · 🦆 ${p.ducks}`:""}</div>
